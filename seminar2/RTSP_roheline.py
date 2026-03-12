@@ -58,8 +58,14 @@ def is_green_screen(frame):
     Tuvastab, kas kaader on peamiselt roheline (marker).
     Sinu ülesanne: Implementeeri see kontroll.
     """
-    # TODO: Sinu kood siia
-    return False
+    small_frame = cv2.resize(frame, (64, 36))
+    blue_mean, green_mean, red_mean = np.mean(small_frame, axis=(0, 1))
+
+    return (
+        green_mean > 180
+        and green_mean > red_mean + 60
+        and green_mean > blue_mean + 60
+    )
 
 # --- Videoühenduse algatamine ---
 stream = RTSPStreamReader(STREAM_URL)
@@ -76,7 +82,7 @@ print("Ootan rohelist märguannet alustamiseks...")
 started = False
 green_cooldown = False 
 last_save_time = 0
-frame_count = 0
+frame_count = 1
 
 try:
     while True:
@@ -104,7 +110,39 @@ try:
         # frame_count += 1
         # last_save_time = now
 
-        # TODO: Sinu kood siia
+        green_screen = is_green_screen(frame)
+
+        if not started:
+            if not green_screen:
+                continue
+
+            started = True
+            green_cooldown = True
+            filename = os.path.join(folder_name, f"frame_{frame_count:04d}.jpg")
+            if cv2.imwrite(filename, frame):
+                print("Roheline marker tuvastatud, alustan salvestamist.")
+                print(f"Salvestatud: {filename}")
+                frame_count += 1
+                last_save_time = now
+            else:
+                print(f"Pildi salvestamine ebaonnestus: {filename}")
+            continue
+
+        if green_cooldown:
+            if not green_screen:
+                green_cooldown = False
+        elif green_screen:
+            print("Lopetamise marker tuvastatud, peatun.")
+            break
+
+        if not green_screen and now - last_save_time >= SAVE_INTERVAL:
+            filename = os.path.join(folder_name, f"frame_{frame_count:04d}.jpg")
+            if cv2.imwrite(filename, frame):
+                print(f"Salvestatud: {filename}")
+                frame_count += 1
+                last_save_time = now
+            else:
+                print(f"Pildi salvestamine ebaonnestus: {filename}")
 
 finally:
     stream.stop()

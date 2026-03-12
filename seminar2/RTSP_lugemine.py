@@ -55,8 +55,8 @@ SAVE_INTERVAL = 9  # Sekundites
 # ja loo selle nimeline kaust piltide salvestamiseks.
 # Kui kaust on juba olemas, ei tohi programm veaga katkeda (vihje: exist_ok=True).
 
-# TODO: Sinu kood siia (asenda järgmine rida)
-folder_name = None #asenda see
+folder_name = STREAM_URL.rstrip("/").split("/")[-1]
+os.makedirs(folder_name, exist_ok=True)
 
 
 # --- Videoühenduse algatamine ---
@@ -72,8 +72,8 @@ print(f"Pildid salvestatakse kausta: '{folder_name}' iga {SAVE_INTERVAL} sekundi
 print("Peatamiseks vajuta Ctrl+C.")
 
 
-last_save_time = 0
-frame_count = 0
+last_save_time = time.time()
+frame_count = 1
 
 try:
     while True:
@@ -93,7 +93,14 @@ try:
         # 3. Uuenda viimase salvestamise aega (last_save_time) ja kaadrite loendurit (frame_count).
         # 4. Prindi terminali teavitus salvestatud pildi kohta.
 
-        # TODO: Sinu kood siia
+        if now - last_save_time >= SAVE_INTERVAL:
+            filename = os.path.join(folder_name, f"frame_{frame_count:04d}.jpg")
+            if cv2.imwrite(filename, frame):
+                print(f"Salvestatud: {filename}")
+                last_save_time = now
+                frame_count += 1
+            else:
+                print(f"Pildi salvestamine ebaonnestus: {filename}")
 
 finally:
     stream.stop()
