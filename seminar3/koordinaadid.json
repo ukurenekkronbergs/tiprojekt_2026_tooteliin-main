@@ -1,0 +1,54 @@
+{
+  "pack_regions": {
+    "pakk_1_yleval_vasakul": [
+      30,
+      20,
+      1870,
+      1050
+    ],
+    "pakk_2_yleval_paremal": [
+      1940,
+      20,
+      1870,
+      1050
+    ],
+    "pakk_3_all_vasakul": [
+      30,
+      1090,
+      1870,
+      1050
+    ],
+    "pakk_4_all_paremal": [
+      1940,
+      1090,
+      1870,
+      1050
+    ]
+  },
+  "roi_regions": {
+    "kuupaev": [
+      0,
+      680,
+      250,
+      200
+    ],
+    "alumine_silt": [
+      0,
+      780,
+      400,
+      270
+    ],
+    "ylemine_silt": [
+      0,
+      0,
+      400,
+      300
+    ],
+    "tooteaken": [
+      350,
+      50,
+      850,
+      950
+    ]
+  }
+}
