@@ -1,5 +1,5 @@
 """
-Seminar 3: Toodete väljalõikamine ja ROI-de eraldamine
+Seminar 4: Toodete väljalõikamine ja ROI-de eraldamine
 
 1) Lõikab 4K kaadrist (3840x2160) välja 4 individuaalset tootepakki (2x2 ruudustik)
 2) Iga paki pealt lõikab välja:
