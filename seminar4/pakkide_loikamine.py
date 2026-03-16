@@ -215,7 +215,7 @@ def save_overview_text(output_path, pack_regions, roi_regions):
     """
     lines = []
     lines.append("=" * 60)
-    lines.append("SEMINAR 3: PAKKIDE JA ROI-DE ÜLEVAADE")
+    lines.append("SEMINAR 4: PAKKIDE JA ROI-DE ÜLEVAADE")
     lines.append("=" * 60)
     lines.append("")
 
