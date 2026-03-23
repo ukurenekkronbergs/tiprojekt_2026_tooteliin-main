@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(conda activate:*)",
+      "Bash(where python:*)",
+      "Bash(conda info:*)",
+      "Read(//c/Users/Kasutaja/miniconda3/**)",
+      "Read(//c/Users/Kasutaja/anaconda3/**)",
+      "Bash(/c/Users/Kasutaja/miniconda3/condabin/conda.bat info:*)",
+      "Bash(/c/Users/Kasutaja/anaconda3/condabin/conda.bat info:*)"
+    ]
+  }
+}
