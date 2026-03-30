@@ -12,8 +12,7 @@ from helpers import get_formatted_date, OpenRouterOCR
 # --- OpenRouter API Configuration ---
 # Määra oma OpenRouter API võti keskkonnamuutujana või asenda kohatäide.
 # API võtmete jaoks on tungivalt soovitatav kasutada keskkonnamuutujaid.
-OPENROUTER_API_KEY = "sk-or-v1-NNNNNNNNNNNNNNNNNNNNNNNNNNNN"
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "sk-or-v1-NNNNNNNNNNNNNNNNNNNNNNNNNNNN")
 
 # Vali oma VLM mudel OpenRouteri kaudu.
 # Mudeleid ja nende hinnakujundust leiad aadressilt https://openrouter.ai/docs#models
