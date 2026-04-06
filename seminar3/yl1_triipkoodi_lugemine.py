@@ -4,7 +4,7 @@ import time
 from dynamsoft_barcode_reader_bundle import *
 
 # 1. Dynamsoft Litsentsi seadistamine
-DYNAMSOFT_LICENSE = "t0084YQEAAIUx4hU4EqEOu9FaT9GprNtmXmbGA7IcvmG7V7l1yrR4WjV1JWPPrLuJoJN4HXVvqroIag2MeSFUJlbpkh0vhl8/Nrk3lffN1GzB7BvBtkl5"
+DYNAMSOFT_LICENSE = os.getenv("DYNAMSOFT_LICENSE", "")
 errorCode, errorMsg = LicenseManager.init_license(DYNAMSOFT_LICENSE)
 if errorCode != EnumErrorCode.EC_OK:
     print(f"Litsentsi viga: {errorMsg}")

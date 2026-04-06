@@ -8,7 +8,7 @@ from dynamsoft_barcode_reader_bundle import *
 # --- KONFIGURATSIOON ---
 INPUT_FOLDER = "rulaad/full_frames"  # Kaust, kus asuvad täiskaadrid
 OUTPUT_SUBFOLDER = "individual_products"
-DYNAMSOFT_LICENSE = "t0084YQEAAIUx4hU4EqEOu9FaT9GprNtmXmbGA7IcvmG7V7l1yrR4WjV1JWPPrLuJoJN4HXVvqroIag2MeSFUJlbpkh0vhl8/Nrk3lffN1GzB7BvBtkl5"
+DYNAMSOFT_LICENSE = os.getenv("DYNAMSOFT_LICENSE", "")
 capture_date = datetime(2026, 2, 14)
 
 if not os.path.exists(INPUT_FOLDER):

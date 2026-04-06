@@ -11,7 +11,7 @@ from helpers import RTSPStreamReader, is_green_screen, measure_global_change
 STREAM_URL = "rtsp://172.17.37.81:8554/rulaad"
 MOTION_THRESHOLD = 10.0
 CAPTURE_DELAY = 2.5
-DYNAMSOFT_LICENSE = "t0084YQEAAIUx4hU4EqEOu9FaT9GprNtmXmbGA7IcvmG7V7l1yrR4WjV1JWPPrLuJoJN4HXVvqroIag2MeSFUJlbpkh0vhl8/Nrk3lffN1GzB7BvBtkl5"
+DYNAMSOFT_LICENSE = os.getenv("DYNAMSOFT_LICENSE", "")
 DEBUG_MODE = True  # Kontrolli seda muutujat enne salvestamist
 capture_date = datetime(2026, 2, 14)
 

@@ -5,21 +5,31 @@ import time
 from datetime import datetime, timedelta
 from queue import Queue
 
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"))
+
 import cv2
 from dynamsoft_barcode_reader_bundle import *
 
 from helpers import (
     RTSPStreamReader,
+    TaktLogger,
     build_debug_image_jobs,
+    build_takt_record,
     compare_labels_with_dino,
     create_product_classifier,
     create_worker_state,
     create_date_ocr,
     create_label_matcher,
+    detect_anomalies,
     format_takt_report,
     format_worker_summary,
+    generate_dashboard,
     is_green_screen,
+    laplacian_sharpness,
     measure_global_change,
+    pick_sharpest_frame,
+    play_alert_sound,
     predict_products,
     infer_product_key,
     update_ocr_stats,
@@ -30,8 +40,10 @@ STREAM_URL = "rtsp://172.17.37.81:8554/rulaad"
 MOTION_THRESHOLD = 15.0
 CAPTURE_DELAY = 2.5
 MONITOR_LOOP_SLEEP_SECONDS = 0.05
-DYNAMSOFT_LICENSE = "t0084YQEAAIUx4hU4EqEOu9FaT9GprNtmXmbGA7IcvmG7V7l1yrR4WjV1JWPPrLuJoJN4HXVvqroIag2MeSFUJlbpkh0vhl8/Nrk3lffN1GzB7BvBtkl5"
+DYNAMSOFT_LICENSE = os.getenv("DYNAMSOFT_LICENSE", "")
 DEBUG_MODE = False  # Silumisreziim piltide salvestamiseks
+ALERT_SOUND = True  # Helisignaal anomaaliate puhul
+MULTI_FRAME_COUNT = 3  # Mitu freimi hõivata teravama valimiseks (1 = keelatud)
 capture_date = datetime(2026, 2, 14)
 
 # DATE_OCR_METHOD voimalikud variandid:
@@ -97,6 +109,10 @@ with open(barcode_data_path, "r", encoding="utf-8") as f:
 
 folder_name = os.path.join(SCRIPT_DIR, STREAM_URL.split("/")[-1])
 os.makedirs(folder_name, exist_ok=True)
+
+log_path = os.path.join(folder_name, "takt_log.jsonl")
+dashboard_path = os.path.join(folder_name, "dashboard.html")
+takt_logger = TaktLogger(log_path)
 
 stream = RTSPStreamReader(STREAM_URL)
 time.sleep(2)
@@ -343,6 +359,39 @@ def process_capture_task(task, worker_state):
             )
         )
 
+    # --- ANOMALY DETECTION, LOGGING & ALERTS ---
+    anomalies = detect_anomalies(
+        raw_date_texts=raw_date_texts,
+        expected_expiry_str=expected_expiry_str,
+        predicted_products=predicted_products,
+        expected_product_key=expected_product_key,
+        label_distances=label_distances,
+    )
+    if anomalies:
+        report_notes.extend([f"ANOMAALIA: {a}" for a in anomalies])
+    processing_elapsed_ms = (time.perf_counter() - process_start_t) * 1000
+    record = build_takt_record(
+        trigger_id=trigger_id,
+        barcode_display=barcode_display,
+        product_display=product_display,
+        expected_date=expected_expiry_str,
+        expected_product_key=expected_product_key,
+        raw_date_texts=raw_date_texts,
+        predicted_products=predicted_products,
+        label_distances=label_distances,
+        processing_ms=processing_elapsed_ms,
+        barcode_ms=barcode_elapsed_ms,
+        slicing_ms=slicing_elapsed_ms,
+        ocr_ms=ocr_elapsed_ms,
+        product_ms=product_elapsed_ms,
+        label_ms=label_elapsed_ms,
+        anomalies=anomalies,
+    )
+    takt_logger.log_takt(record)
+
+    if ALERT_SOUND and anomalies:
+        play_alert_sound(anomalies)
+
     emit_report()
 
 
@@ -438,11 +487,26 @@ try:
 
             if process_this_frame and pending_trigger_id is not None:
                 elapsed = now - cycle_start_time
+
+                # Multi-frame blur detection: grab N frames, pick sharpest
+                if MULTI_FRAME_COUNT > 1:
+                    candidates = [frame2.copy()]
+                    for _ in range(MULTI_FRAME_COUNT - 1):
+                        time.sleep(0.05)
+                        ret_extra, frame_extra = stream.read()
+                        if ret_extra and frame_extra is not None:
+                            candidates.append(frame_extra.copy())
+                    best_frame = pick_sharpest_frame(candidates)
+                    sharpness = laplacian_sharpness(best_frame)
+                    log(f"[{elapsed:.2f}s] Valiti teravaim freim {len(candidates)}-st (teravus: {sharpness:.1f})")
+                else:
+                    best_frame = frame2.copy()
+
                 task_queue.put(
                     {
                         "trigger_id": pending_trigger_id,
                         "elapsed": elapsed,
-                        "frame": frame2.copy(),
+                        "frame": best_frame,
                         "captured_at": now,
                     }
                 )
@@ -460,3 +524,10 @@ finally:
     task_queue.put(STOP_WORKER)
     worker_thread.join(timeout=5.0)
     log(format_worker_summary(total_triggers, worker_state, date_ocr.get_usage_totals()))
+
+    # Generate HTML dashboard from collected log
+    try:
+        generate_dashboard(log_path, dashboard_path)
+        log(f"\nDashboard genereeritud: {dashboard_path}")
+    except Exception as exc:
+        log(f"Dashboard genereerimine ebaonnestus: {exc}")

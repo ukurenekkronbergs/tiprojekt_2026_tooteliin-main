@@ -1,9 +1,12 @@
 import base64
 import io
+import json
 import os
 import re
 import threading
 import time
+import winsound
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -58,7 +61,10 @@ DEFAULT_VLM_BATCH_CONSISTENT_USER_PROMPT = (
 
 
 class RTSPStreamReader:
-    def __init__(self, url):
+    def __init__(self, url, max_retries=5, retry_delay=2.0):
+        self.url = url
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
         self.cap = cv2.VideoCapture(url)
         self.ret = False
         self.frame = None
@@ -68,15 +74,31 @@ class RTSPStreamReader:
         self.thread.start()
 
     def _update(self):
+        retries = 0
         while self.running:
-            ret, frame = self.cap.read()
+            try:
+                ret, frame = self.cap.read()
+            except Exception:
+                ret, frame = False, None
             if not self.running:
                 break
-            with self.lock:
-                self.ret = ret
-                self.frame = frame
-            if not ret:
-                break
+            if ret:
+                retries = 0
+                with self.lock:
+                    self.ret = ret
+                    self.frame = frame
+            else:
+                retries += 1
+                if retries > self.max_retries:
+                    with self.lock:
+                        self.ret = False
+                    break
+                time.sleep(self.retry_delay)
+                try:
+                    self.cap.release()
+                    self.cap = cv2.VideoCapture(self.url)
+                except Exception:
+                    pass
 
     def read(self):
         with self.lock:
@@ -1117,3 +1139,303 @@ def create_date_ocr(
         batch_consistent_user_prompt=batch_consistent_user_prompt,
         mode=normalized_method,
     )
+
+
+# ---------------------------------------------------------------------------
+# BLUR DETECTION: Laplacian variance – pick sharpest frame from N candidates
+# ---------------------------------------------------------------------------
+
+def laplacian_sharpness(frame: np.ndarray) -> float:
+    """Return Laplacian variance as a sharpness score (higher = sharper)."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return cv2.Laplacian(gray, cv2.CV_64F).var()
+
+
+def pick_sharpest_frame(frames: List[np.ndarray]) -> np.ndarray:
+    """Given a list of frames, return the one with the highest sharpness score."""
+    if not frames:
+        raise ValueError("No frames provided")
+    if len(frames) == 1:
+        return frames[0]
+    scores = [laplacian_sharpness(f) for f in frames]
+    best_idx = int(np.argmax(scores))
+    return frames[best_idx]
+
+
+# ---------------------------------------------------------------------------
+# JSON LOGGING: Save per-takt results to a JSONL file
+# ---------------------------------------------------------------------------
+
+class TaktLogger:
+    """Appends one JSON line per takt to a log file."""
+
+    def __init__(self, log_path: str):
+        self.log_path = log_path
+        self._lock = threading.Lock()
+        os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+
+    def log_takt(self, record: Dict[str, Any]) -> None:
+        with self._lock:
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def build_takt_record(
+    *,
+    trigger_id: int,
+    barcode_display: str,
+    product_display: str,
+    expected_date: str,
+    expected_product_key: Optional[str],
+    raw_date_texts: List[Optional[str]],
+    predicted_products: Optional[List[str]],
+    label_distances: Optional[Dict[str, Any]],
+    processing_ms: float,
+    barcode_ms: float,
+    slicing_ms: float,
+    ocr_ms: float,
+    product_ms: float,
+    label_ms: float,
+    anomalies: List[str],
+) -> Dict[str, Any]:
+    """Build a flat dict suitable for JSON logging."""
+    formatted_dates = [get_formatted_date(t) for t in raw_date_texts]
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "trigger_id": trigger_id,
+        "barcode": barcode_display,
+        "product": product_display,
+        "expected_date": expected_date,
+        "expected_product_key": expected_product_key,
+        "detected_dates": formatted_dates,
+        "predicted_products": predicted_products,
+        "label1_distances": (label_distances or {}).get("label1_distances"),
+        "label2_distances": (label_distances or {}).get("label2_distances"),
+        "processing_ms": round(processing_ms, 2),
+        "barcode_ms": round(barcode_ms, 2),
+        "slicing_ms": round(slicing_ms, 2),
+        "ocr_ms": round(ocr_ms, 2),
+        "product_ms": round(product_ms, 2),
+        "label_ms": round(label_ms, 2),
+        "anomalies": anomalies,
+    }
+
+
+# ---------------------------------------------------------------------------
+# ANOMALY DETECTION & AUDIO ALERTS
+# ---------------------------------------------------------------------------
+
+LABEL_DISTANCE_THRESHOLD = 0.5
+
+
+def detect_anomalies(
+    *,
+    raw_date_texts: List[Optional[str]],
+    expected_expiry_str: str,
+    predicted_products: Optional[List[str]],
+    expected_product_key: Optional[str],
+    label_distances: Optional[Dict[str, Any]],
+) -> List[str]:
+    """Return a list of human-readable anomaly strings for this takt."""
+    anomalies: List[str] = []
+
+    # Date mismatches
+    for i, raw in enumerate(raw_date_texts):
+        fmt = get_formatted_date(raw)
+        if fmt in (None, "NA", "N/A"):
+            anomalies.append(f"Pakend {i+1}: kuupäev loetamatu")
+        elif fmt != expected_expiry_str:
+            anomalies.append(f"Pakend {i+1}: vale kuupäev {fmt} (oodati {expected_expiry_str})")
+
+    # Product mismatches
+    if predicted_products and expected_product_key:
+        for i, pred in enumerate(predicted_products):
+            if pred == "empty":
+                anomalies.append(f"Pakend {i+1}: tühi pakk")
+            elif pred != expected_product_key:
+                anomalies.append(f"Pakend {i+1}: vale toode '{pred}' (oodati '{expected_product_key}')")
+
+    # Label distance too high
+    if label_distances:
+        for label_key in ("label1_distances", "label2_distances"):
+            dists = label_distances.get(label_key, [])
+            label_name = "alumine silt" if "label1" in label_key else "ülemine silt"
+            for i, d in enumerate(dists):
+                if d is not None and d >= LABEL_DISTANCE_THRESHOLD:
+                    anomalies.append(
+                        f"Pakend {i+1}: {label_name} kaugus {d:.2f} (lävend {LABEL_DISTANCE_THRESHOLD})"
+                    )
+
+    return anomalies
+
+
+def play_alert_sound(anomalies: List[str]) -> None:
+    """Play a Windows beep if there are anomalies. Non-blocking."""
+    if not anomalies:
+        return
+    try:
+        # Short beep: 1000 Hz, 200ms
+        winsound.Beep(1000, 200)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# HTML DASHBOARD GENERATOR
+# ---------------------------------------------------------------------------
+
+def generate_dashboard(log_path: str, output_path: str) -> None:
+    """Read a JSONL log file and generate a self-contained HTML dashboard."""
+    records = []
+    if os.path.exists(log_path):
+        with open(log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+
+    total = len(records)
+    if total == 0:
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("<html><body><h1>Dashboard</h1><p>Andmed puuduvad.</p></body></html>")
+        return
+
+    # Compute stats
+    anomaly_count = sum(1 for r in records if r.get("anomalies"))
+    ok_count = total - anomaly_count
+    avg_processing = sum(r.get("processing_ms", 0) for r in records) / total
+    avg_ocr = sum(r.get("ocr_ms", 0) for r in records) / total
+
+    date_correct = 0
+    date_total = 0
+    for r in records:
+        for d in (r.get("detected_dates") or []):
+            date_total += 1
+            if d == r.get("expected_date"):
+                date_correct += 1
+    date_accuracy = (date_correct / date_total * 100) if date_total else 0
+
+    product_correct = 0
+    product_total = 0
+    for r in records:
+        preds = r.get("predicted_products") or []
+        exp = r.get("expected_product_key")
+        for p in preds:
+            if p and p != "empty":
+                product_total += 1
+                if p == exp:
+                    product_correct += 1
+    product_accuracy = (product_correct / product_total * 100) if product_total else 0
+
+    # Anomaly type breakdown
+    anomaly_types: Dict[str, int] = {}
+    for r in records:
+        for a in (r.get("anomalies") or []):
+            if "kuupäev" in a or "kuupaev" in a:
+                key = "Kuupäev"
+            elif "vale toode" in a:
+                key = "Vale toode"
+            elif "tühi" in a or "tyhi" in a:
+                key = "Tühi pakk"
+            elif "silt" in a:
+                key = "Sildi kaugus"
+            else:
+                key = "Muu"
+            anomaly_types[key] = anomaly_types.get(key, 0) + 1
+
+    # Build table rows
+    table_rows = []
+    for r in records:
+        anoms = r.get("anomalies") or []
+        status = "⚠️" if anoms else "✅"
+        dates_str = ", ".join(str(d) for d in (r.get("detected_dates") or []))
+        prods_str = ", ".join(str(p) for p in (r.get("predicted_products") or []))
+        anom_str = "; ".join(anoms) if anoms else "-"
+        table_rows.append(
+            f"<tr class='{'anomaly-row' if anoms else ''}'>"
+            f"<td>{status}</td>"
+            f"<td>{r.get('trigger_id','?')}</td>"
+            f"<td>{r.get('timestamp','?')[:19]}</td>"
+            f"<td>{r.get('barcode','?')}</td>"
+            f"<td>{r.get('product','?')}</td>"
+            f"<td>{r.get('expected_date','?')}</td>"
+            f"<td>{dates_str}</td>"
+            f"<td>{prods_str}</td>"
+            f"<td>{r.get('processing_ms',0):.0f}</td>"
+            f"<td>{anom_str}</td>"
+            f"</tr>"
+        )
+
+    anomaly_bars = "".join(
+        f"<div class='bar-item'><span class='bar-label'>{k}</span>"
+        f"<div class='bar' style='width:{v*5}px'>{v}</div></div>"
+        for k, v in sorted(anomaly_types.items(), key=lambda x: -x[1])
+    )
+
+    html = f"""<!DOCTYPE html>
+<html lang="et">
+<head>
+<meta charset="utf-8">
+<title>Tooteliini Dashboard</title>
+<style>
+  body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+  h1 {{ color: #333; }}
+  .stats {{ display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }}
+  .stat-card {{ background: white; border-radius: 8px; padding: 20px; min-width: 180px;
+               box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }}
+  .stat-card .value {{ font-size: 2em; font-weight: bold; }}
+  .stat-card .label {{ color: #666; margin-top: 5px; }}
+  .stat-card.green .value {{ color: #2ecc71; }}
+  .stat-card.red .value {{ color: #e74c3c; }}
+  .stat-card.blue .value {{ color: #3498db; }}
+  table {{ width: 100%; border-collapse: collapse; background: white;
+           box-shadow: 0 2px 4px rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden; }}
+  th {{ background: #2c3e50; color: white; padding: 12px 8px; text-align: left; font-size: 0.85em; }}
+  td {{ padding: 8px; border-bottom: 1px solid #eee; font-size: 0.85em; }}
+  tr:hover {{ background: #f0f0f0; }}
+  .anomaly-row {{ background: #fff3f3; }}
+  .anomaly-row:hover {{ background: #ffe0e0; }}
+  .bar-item {{ display: flex; align-items: center; margin: 4px 0; }}
+  .bar-label {{ width: 120px; font-size: 0.9em; }}
+  .bar {{ background: #e74c3c; color: white; padding: 2px 8px; border-radius: 4px;
+          font-size: 0.85em; min-width: 30px; text-align: center; }}
+  .section {{ background: white; border-radius: 8px; padding: 20px;
+              box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }}
+</style>
+</head>
+<body>
+<h1>Tooteliini kvaliteedikontroll</h1>
+<p>Genereeritud: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</p>
+
+<div class="stats">
+  <div class="stat-card green"><div class="value">{ok_count}</div><div class="label">OK takte</div></div>
+  <div class="stat-card red"><div class="value">{anomaly_count}</div><div class="label">Anomaaliaga takte</div></div>
+  <div class="stat-card blue"><div class="value">{total}</div><div class="label">Kokku takte</div></div>
+  <div class="stat-card blue"><div class="value">{date_accuracy:.1f}%</div><div class="label">Kuupäeva täpsus</div></div>
+  <div class="stat-card blue"><div class="value">{product_accuracy:.1f}%</div><div class="label">Toote täpsus</div></div>
+  <div class="stat-card"><div class="value">{avg_processing:.0f}ms</div><div class="label">Kesk. töötlusaeg</div></div>
+  <div class="stat-card"><div class="value">{avg_ocr:.0f}ms</div><div class="label">Kesk. OCR aeg</div></div>
+</div>
+
+<div class="section">
+  <h2>Anomaaliate jaotus</h2>
+  {anomaly_bars if anomaly_bars else '<p>Anomaaliaid ei leitud.</p>'}
+</div>
+
+<h2>Taktide detail</h2>
+<table>
+<thead>
+<tr><th></th><th>Takt</th><th>Aeg</th><th>Triipkood</th><th>Toode</th><th>Oodatav kp</th><th>Tuvastatud kp</th><th>Tuvastatud tooted</th><th>Aeg (ms)</th><th>Anomaaliad</th></tr>
+</thead>
+<tbody>
+{''.join(table_rows)}
+</tbody>
+</table>
+</body>
+</html>"""
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)

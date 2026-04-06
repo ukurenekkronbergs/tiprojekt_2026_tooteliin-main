@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from dynamsoft_barcode_reader_bundle import *
 
 # Dynamsoft Litsents
-DYNAMSOFT_LICENSE = "t0084YQEAAIUx4hU4EqEOu9FaT9GprNtmXmbGA7IcvmG7V7l1yrR4WjV1JWPPrLuJoJN4HXVvqroIag2MeSFUJlbpkh0vhl8/Nrk3lffN1GzB7BvBtkl5"
+DYNAMSOFT_LICENSE = os.getenv("DYNAMSOFT_LICENSE", "")
 LicenseManager.init_license(DYNAMSOFT_LICENSE)
 
 # Initsialiseerime triipkoodi lugeja (Router), sätime seaded nii nagu Demo alusel otsustasime
